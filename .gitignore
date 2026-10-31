@@ -1,0 +1,22 @@
+# VS
+.vs/
+x64/
+Win32/
+Debug/
+Release/
+*.user
+*.suo
+*.aps
+*.opendb
+*.VC.db
+
+# build artifacts
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.log
+
+# keep data but ignore big local files
+data/*.avi
+!data/test.avi
