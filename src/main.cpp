@@ -1,12 +1,76 @@
 // EyeGazePassword - 课设 demo 主程序
 // 功能：摄像头采集 / 人脸检测 / 人眼检测 / 九宫格视线追踪 / 密码输入
 // 按键：ESC或Q退出，R重新输入密码，M切换模式(视线演示/密码输入)
+// 菜单：文件-退出；模式-切换/重置；帮助-关于
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <string>
 #include <cmath>
 #include "GazeTracker.h"
 #include "PasswordGate.h"
+
+#ifdef _WIN32
+#include <windows.h>
+
+// ---------------- Win32 菜单（给 OpenCV 窗口挂真正的菜单栏） ----------------
+// OpenCV 自带窗口过程不认识菜单命令，所以子类化它：收到 WM_COMMAND 时
+// 记下命令码，主循环每帧读取执行（同一 UI 线程，安全）。
+static bool g_menuQuit = false;
+static int  g_menuCmd = 0;   // 1=重置密码  2=切换模式
+static WNDPROC g_origWndProc = nullptr;
+
+enum MenuId {
+    IDM_EXIT   = 1001,
+    IDM_RESET  = 1002,
+    IDM_MODE   = 1003,
+    IDM_ABOUT  = 1004,
+};
+
+static LRESULT CALLBACK MenuWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND) {
+        switch (LOWORD(wParam)) {
+        case IDM_EXIT:  g_menuQuit = true; break;
+        case IDM_RESET: g_menuCmd  = 1;    break;
+        case IDM_MODE:  g_menuCmd  = 2;    break;
+        case IDM_ABOUT:
+            MessageBoxW(hWnd,
+                L"EyeGazePassword 课设 Demo\n\n"
+                L"注视九宫格数字约 1 秒即选中，\n"
+                L"演示密码 1234（M 键或菜单切换密码模式）。",
+                L"关于", MB_OK | MB_ICONINFORMATION);
+            break;
+        }
+        return 0;
+    }
+    return CallWindowProcW(g_origWndProc, hWnd, msg, wParam, lParam);
+}
+
+static void installMenu(const std::string& title)
+{
+    HWND hWnd = FindWindowW(NULL, std::wstring(title.begin(), title.end()).c_str());
+    if (!hWnd) return;
+
+    HMENU hBar   = CreateMenu();
+    HMENU hFile  = CreatePopupMenu();   // 文件
+    HMENU hMode  = CreatePopupMenu();   // 模式
+    HMENU hHelp  = CreatePopupMenu();   // 帮助
+
+    AppendMenuW(hFile, MF_STRING, IDM_EXIT,  L"退出(&X)\tAlt+F4");
+    AppendMenuW(hMode, MF_STRING, IDM_MODE,  L"切换 视线/密码 模式(&M)");
+    AppendMenuW(hMode, MF_STRING, IDM_RESET, L"重置密码(&R)");
+    AppendMenuW(hHelp, MF_STRING, IDM_ABOUT, L"关于(&A)...");
+
+    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hFile, L"文件(&F)");
+    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hMode, L"模式(&M)");
+    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hHelp, L"帮助(&H)");
+
+    SetMenu(hWnd, hBar);
+    // 子类化：替换窗口过程，接管菜单命令，其余消息仍交回 OpenCV
+    g_origWndProc = (WNDPROC)SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)MenuWndProc);
+    DrawMenuBar(hWnd);
+}
+#endif // _WIN32
 
 // ---------------- 九宫格参数 ----------------
 // 屏幕右侧画 3x3 宫格，每格对应一个数字 1~9
@@ -148,6 +212,9 @@ int main(int argc, char** argv)
 
     const std::string winMain = "EyeGazePassword";
     cv::namedWindow(winMain, cv::WINDOW_AUTOSIZE);
+#ifdef _WIN32
+    installMenu(winMain);   // 挂菜单栏：文件/模式/帮助
+#endif
 
     GridUI grid;
     PasswordGate gate;
@@ -205,6 +272,14 @@ int main(int argc, char** argv)
 
         cv::imshow(winMain, canvas);
         int key = cv::waitKey(30);
+
+        // 处理菜单命令（菜单过程只记录，真正执行放这里）
+#ifdef _WIN32
+        if (g_menuQuit) break;
+        if (g_menuCmd == 1) { gate.clear(); g_menuCmd = 0; }
+        if (g_menuCmd == 2) { passwordMode = !passwordMode; gate.clear(); g_menuCmd = 0; }
+#endif
+
         if (key == 27 || key == 'q' || key == 'Q') break;      // ESC/Q 退出
         if (key == 'r' || key == 'R') gate.clear();             // 重输
         if (key == 'm' || key == 'M') {                         // 切换模式

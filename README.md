@@ -41,6 +41,18 @@ x64\Debug\EyeGazePassword.exe --video data\test.avi
 | `M` | 切换「视线演示 / 密码输入」模式 |
 | `R` | 清空已输入密码 |
 
+### 窗口菜单（Win32 菜单栏）
+
+| 菜单项 | 作用 |
+|--------|------|
+| 文件 → 退出 | 关闭程序（等价 ESC） |
+| 模式 → 切换 视线/密码 模式 | 等价 `M` 键 |
+| 模式 → 重置密码 | 等价 `R` 键 |
+| 帮助 → 关于 | 显示操作提示 |
+
+菜单在 `src/main.cpp` 顶部 `installMenu()` 中用 Win32 API 创建，并子类化
+OpenCV 窗口过程接管 `WM_COMMAND`——扩展菜单项可作为课设的入门练习。
+
 ### 玩法
 
 1. 启动后坐在屏幕正前方，保证光线均匀、脸占画面约 1/4~1/3；
@@ -57,10 +69,11 @@ EyeGazePassword/
 ├── data/haarcascades/           # Haar 级联 xml（从 OpenCV 复制，保证可移植）
 ├── data/test.avi                # 无摄像头时的测试视频
 ├── src/
-│   ├── main.cpp                 # 采集、九宫格 UI、主循环、按键
+│   ├── main.cpp                 # 采集、菜单、九宫格 UI、主循环、按键
 │   ├── GazeTracker.h/.cpp       # 人脸 + 眼睛 + 瞳孔 + 视线估计
 │   └── PasswordGate.h/.cpp      # 密码缓冲与校验
 ├── PROJECT_PLAN.md              # 项目规划 / 评分点 / 扩展方向（含手机 App）
+├── 眼神密码系统-课设指导书.docx  # 学生指导书（任务书+评分+报告要求）
 └── README.md
 ```
 
@@ -76,6 +89,7 @@ EyeGazePassword/
 ## 常见问题
 
 - **打开摄像头失败**：换 `--camera 1`；检查摄像头是否被其他软件占用。
+- **画面全黑但程序没报错**：多半是摄像头号不对（笔记本常有红外/虚拟摄像头占 0 号）。先用 `--camera 1` 试，找到正常画面的编号；Windows 设置 → 隐私 → 相机 也要允许桌面应用访问。
 - **找不到级联 xml**：把 `data\haarcascades` 拷到 exe 同级目录，或设置 `OPENCV_DIR=D:\opencv\build`。
 - **链接错误 LNK2019 opencv_world…**：确认工程是 **x64**，且 `D:\opencv\build\x64\vc16\lib` 下有对应 `.lib`（改 `vc15`/`vc16` 视你的 OpenCV 而定）。
 - **工具集不匹配**：VS 版本不同可在工程属性 → 常规 → 平台工具集中"重定向解决方案"。
