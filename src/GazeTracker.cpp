@@ -16,7 +16,13 @@ bool GazeTracker::findPupil(const cv::Mat& gray, const cv::Rect& eyeRoi, cv::Poi
     cv::Rect roi = eyeRoi & cv::Rect(0, 0, gray.cols, gray.rows);
     if (roi.width < 8 || roi.height < 8) return false;
 
-    cv::Mat eye = gray(roi);
+    // 排除眼框上方 20%（多为眉毛，比瞳孔还暗，会把质心带跑）
+    cv::Rect inner(roi.x, roi.y + roi.height * 2 / 10,
+                   roi.width, roi.height * 8 / 10);
+    inner &= cv::Rect(0, 0, gray.cols, gray.rows);
+    if (inner.width < 8 || inner.height < 8) return false;
+
+    cv::Mat eye = gray(inner);
     cv::GaussianBlur(eye, eye, cv::Size(5, 5), 0);
 
     // 自适应阈值：瞳孔/虹膜比皮肤暗很多
@@ -27,11 +33,15 @@ bool GazeTracker::findPupil(const cv::Mat& gray, const cv::Rect& eyeRoi, cv::Poi
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::morphologyEx(bin, bin, cv::MORPH_OPEN, kernel);
 
-    cv::Moments m = cv::moments(bin, true);
-    if (m.m00 < 20.0) return false; // 暗像素太少，认为没找到瞳孔
+    double darkRatio = cv::countNonZero(bin) / (double)(bin.rows * bin.cols);
+    // 暗像素太少没瞳孔；太多说明阈值把整只眼都判暗了（闭眼/全黑），不可信
+    if (darkRatio < 0.02 || darkRatio > 0.6) return false;
 
-    pupilOut.x = roi.x + (float)(m.m10 / m.m00);
-    pupilOut.y = roi.y + (float)(m.m01 / m.m00);
+    cv::Moments m = cv::moments(bin, true);
+    if (m.m00 < 20.0) return false;
+
+    pupilOut.x = inner.x + (float)(m.m10 / m.m00);
+    pupilOut.y = inner.y + (float)(m.m01 / m.m00);
     return true;
 }
 
@@ -57,8 +67,8 @@ TrackResult GazeTracker::process(const cv::Mat& frame)
     upper &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     std::vector<cv::Rect> eyes;
-    eyeCascade_.detectMultiScale(gray(upper), eyes, 1.1, 6, 0,
-                                 cv::Size(res.faceBox.width / 10, res.faceBox.height / 12));
+    eyeCascade_.detectMultiScale(gray(upper), eyes, 1.1, 4, 0,
+                                 cv::Size(res.faceBox.width / 12, res.faceBox.height / 14));
     for (auto& e : eyes) {
         EyeInfo info;
         info.box = e + cv::Point(upper.x, upper.y);
@@ -78,11 +88,29 @@ TrackResult GazeTracker::process(const cv::Mat& frame)
         float ny = (e.pupil.y - (e.box.y + e.box.height * 0.5f)) / (e.box.height * 0.5f);
         gx += nx; gy += ny; ++n;
     }
+
     if (n > 0) {
-        res.gaze = cv::Point2f(gx / n, gy / n);
-        // 限幅
-        res.gaze.x = std::max(-1.f, std::min(1.f, res.gaze.x));
-        res.gaze.y = std::max(-1.f, std::min(1.f, res.gaze.y));
+        framesLostEyes_ = 0;
+        cv::Point2f raw(gx / n, gy / n);
+        raw.x = std::max(-1.f, std::min(1.f, raw.x));
+        raw.y = std::max(-1.f, std::min(1.f, raw.y));
+
+        // 自动量程：跟踪各轴历史极值（每秒遗忘约 1.5%），把实际达到的
+        // 范围拉伸到接近 [-1,1]，保证边缘格子够得着
+        extX_ = std::max(std::fabs(raw.x), extX_ * 0.9995f);
+        extY_ = std::max(std::fabs(raw.y), extY_ * 0.9995f);
+        float ax = std::max(extX_, 0.12f);
+        float ay = std::max(extY_, 0.12f);
+        raw.x = std::max(-1.f, std::min(1.f, raw.x / ax * 0.9f));
+        raw.y = std::max(-1.f, std::min(1.f, raw.y / ay * 0.9f));
+
+        // 指数滑动平均：当前值占 40%，历史占 60%，压掉单帧瞳孔抖动
+        smoothGaze_ = smoothGaze_ * 0.6f + raw * 0.4f;
+    } else {
+        // 眼睛偶尔丢检：短时间保持上次视线，超过 15 帧才慢慢回到中心
+        if (++framesLostEyes_ > 15)
+            smoothGaze_ *= 0.85f;
     }
+    res.gaze = smoothGaze_;
     return res;
 }

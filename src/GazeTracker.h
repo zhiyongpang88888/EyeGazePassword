@@ -31,6 +31,15 @@ private:
     cv::CascadeClassifier faceCascade_;
     cv::CascadeClassifier eyeCascade_;
 
+    // 稳定化状态：平滑 + 丢眼保持（防止十字乱跳，学生可换成卡尔曼滤波）
+    cv::Point2f smoothGaze_{0.f, 0.f};   // 指数滑动平均后的视线
+    int framesLostEyes_ = 0;             // 连续没检到眼睛的帧数
+
+    // 自动量程：瞳孔物理移动小，原始偏移通常到不了 ±0.35 的分界线，
+    // 用历史极值把实际范围拉伸到 [-1,1]（简化版"标定"，9 点标定留给学生做）
+    float extX_ = 0.30f;                 // x 轴历史极值（缓慢遗忘）
+    float extY_ = 0.30f;                 // y 轴历史极值
+
     // 在眼睛 ROI 内找瞳孔（暗区质心）
     bool findPupil(const cv::Mat& gray, const cv::Rect& eyeRoi, cv::Point2f& pupilOut);
 };

@@ -10,6 +10,9 @@
 #include "PasswordGate.h"
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX   // 防止 windows.h 的 min/max 宏吃掉 std::min/std::max
+#endif
 #include <windows.h>
 
 // ---------------- Win32 菜单（给 OpenCV 窗口挂真正的菜单栏） ----------------
@@ -73,7 +76,8 @@ static void installMenu(const std::string& title)
 #endif // _WIN32
 
 // ---------------- 九宫格参数 ----------------
-// 屏幕右侧画 3x3 宫格，每格对应一个数字 1~9
+// 3x3 宫格半透明覆盖在视频画面正中央：
+//   看正前稍偏 = 5，看左上 = 1 ... 方向与屏幕位置一致（所见即所得）
 static const int kGridN = 3;
 struct GridUI {
     cv::Rect cells[3][3];
@@ -91,51 +95,59 @@ static void layoutGrid(GridUI& g, const cv::Rect& area)
             g.cells[r][c] = cv::Rect(area.x + c * w, area.y + r * h, w, h);
 }
 
-// 由视线偏移 (-1..1) 推出宫格行列；死区在正中间
-static bool gazeToCell(const cv::Point2f& gaze, int& r, int& c, float dead = 0.35f)
+// 由视线偏移 (-1..1) 推出宫格行列
+// idle：正中央很小的"待机区"，避免发呆时在 5 附近抖动
+// dead：三段分界线，大于它才到左右/上下列
+static bool gazeToCell(const cv::Point2f& gaze, int& r, int& c,
+                       float dead = 0.35f, float idle = 0.15f)
 {
-    if (std::fabs(gaze.x) < dead && std::fabs(gaze.y) < dead) return false;
+    if (std::fabs(gaze.x) < idle && std::fabs(gaze.y) < idle) return false;
     c = gaze.x < -dead ? 0 : (gaze.x > dead ? 2 : 1);
     r = gaze.y < -dead ? 0 : (gaze.y > dead ? 2 : 1);
     return true;
 }
 
-// 画宫格；返回本帧"选中"的数字（1~9），0 表示没有
+// 画宫格（半透明覆盖在视频上）；返回本帧"选中"的数字（1~9），0 表示没有
 static int drawGrid(cv::Mat& canvas, GridUI& g, int curR, int curC, bool aiming)
 {
     static const char* labels[3][3] = { {"1","2","3"}, {"4","5","6"}, {"7","8","9"} };
     int picked = 0;
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
-            cv::Scalar color(60, 60, 60);
-            if (aiming && r == curR && c == curC) {
+            bool hot = aiming && r == curR && c == curC;
+            if (hot) {
                 g.progress[r][c]++;
-                color = cv::Scalar(0, 200, 0); // 当前注视格变亮
                 if (g.progress[r][c] >= g.dwellFrames) {
                     picked = r * 3 + c + 1;
                     g.progress[r][c] = 0;
-                    // 全部清零，避免连续触发
                     for (int i = 0; i < 3; i++)
                         for (int j = 0; j < 3; j++) g.progress[i][j] = 0;
                 }
             } else {
                 g.progress[r][c] = 0;
             }
-            cv::rectangle(canvas, g.cells[r][c], color, 2);
+
+            // 半透明底色：人脸和检测框仍透得出来
+            cv::Rect cr = g.cells[r][c];
+            cv::Mat roi = canvas(cr);
+            cv::Mat lay(roi.size(), CV_8UC3,
+                        hot ? cv::Scalar(0, 150, 0) : cv::Scalar(50, 50, 50));
+            cv::addWeighted(lay, hot ? 0.55 : 0.40, roi, hot ? 0.45 : 0.60, 0, roi);
+            cv::rectangle(canvas, cr, hot ? cv::Scalar(0, 220, 0) : cv::Scalar(90, 90, 90), 2);
+
             // 凝视进度条
-            if (aiming && r == curR && c == curC) {
+            if (hot) {
                 float p = (float)g.progress[r][c] / g.dwellFrames;
                 cv::rectangle(canvas,
-                    cv::Rect(g.cells[r][c].x + 2, g.cells[r][c].y + 2,
-                             (int)((g.cells[r][c].width - 4) * p), 6),
+                    cv::Rect(cr.x + 2, cr.y + 2, (int)((cr.width - 4) * p), 6),
                     cv::Scalar(0, 255, 255), cv::FILLED);
             }
             int baseline = 0;
             cv::Size ts = cv::getTextSize(labels[r][c], cv::FONT_HERSHEY_SIMPLEX, 1.6, 3, &baseline);
-            cv::Point org(g.cells[r][c].x + (g.cells[r][c].width - ts.width) / 2,
-                          g.cells[r][c].y + (g.cells[r][c].height + ts.height) / 2);
+            cv::Point org(cr.x + (cr.width - ts.width) / 2,
+                          cr.y + (cr.height + ts.height) / 2);
             cv::putText(canvas, labels[r][c], org, cv::FONT_HERSHEY_SIMPLEX, 1.6,
-                        aiming && r == curR && c == curC ? cv::Scalar(0, 255, 0) : cv::Scalar(200, 200, 200),
+                        hot ? cv::Scalar(0, 255, 0) : cv::Scalar(230, 230, 230),
                         3, cv::LINE_AA);
         }
     }
@@ -151,11 +163,19 @@ static void drawOverlay(cv::Mat& frame, const TrackResult& tr)
         return;
     }
     cv::rectangle(frame, tr.faceBox, cv::Scalar(0, 255, 255), 2);
+    int pupils = 0;
     for (auto& e : tr.eyes) {
         cv::rectangle(frame, e.box, cv::Scalar(255, 0, 0), 1);
-        if (e.hasPupil)
+        if (e.hasPupil) {
             cv::circle(frame, e.pupil, 3, cv::Scalar(0, 0, 255), cv::FILLED);
+            pupils++;
+        }
     }
+    // 调试信息：期望 eyes=2 pupil=2，不足时说明眼睛没检到/瞳孔没找到
+    cv::putText(frame, "eyes=" + std::to_string(tr.eyes.size()) +
+                       "  pupil=" + std::to_string(pupils),
+                cv::Point(10, 58), cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                pupils >= 2 ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255), 2);
     // 用一个小十字显示估计的视线方向（画在画面中心附近）
     cv::Point center(frame.cols / 2, frame.rows / 2);
     cv::Point tip = center + cv::Point((int)(tr.gaze.x * 80), (int)(tr.gaze.y * 80));
@@ -255,19 +275,31 @@ int main(int argc, char** argv)
         TrackResult tr = tracker.process(frame);
         drawOverlay(frame, tr);
 
-        // 布局：左边摄像头，右边 3x3 宫格
-        int panelW = frame.rows; // 正方形面板
-        cv::Mat canvas(frame.rows, frame.cols + panelW, CV_8UC3, cv::Scalar(30, 30, 30));
-        frame.copyTo(canvas(cv::Rect(0, 0, frame.cols, frame.rows)));
-        layoutGrid(grid, cv::Rect(frame.cols, 0, panelW, panelW));
+        // 单栏布局：九宫格半透明覆盖在视频正中央（底部留状态栏）
+        cv::Mat canvas = frame.clone();
+        int barH = 56;
+        int gs = std::min(canvas.cols, canvas.rows - barH) * 85 / 100;
+        layoutGrid(grid, cv::Rect((canvas.cols - gs) / 2,
+                                  (canvas.rows - barH - gs) / 2, gs, gs));
 
         int curR = -1, curC = -1;
-        bool aiming = gazeToCell(tr.gaze, curR, curC);
+        // 没脸/没眼睛时不选格，避免视线归零后自动"选 5"
+        bool aiming = tr.faceFound && gazeToCell(tr.gaze, curR, curC);
         // 简单防抖：连续 3 帧落在同一格才算数
         static int lastR = -1, lastC = -1, same = 0;
         if (aiming && curR == lastR && curC == lastC) same++;
         else { same = 0; lastR = curR; lastC = curC; }
         bool stable = aiming && same >= 3;
+
+        // 视线调试：数值长期在 (-0.15,0.15) 说明停在待机区，要往格子方向看
+        {
+            char dbg[96];
+            snprintf(dbg, sizeof(dbg), "gaze=(%.2f,%.2f)  cell=(%d,%d)%s",
+                     tr.gaze.x, tr.gaze.y, curR, curC,
+                     stable ? "  aiming" : "");
+            cv::putText(canvas, dbg, cv::Point(10, 84),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 0), 1);
+        }
 
         int picked = drawGrid(canvas, grid, curR, curC, stable);
 
@@ -310,6 +342,12 @@ int main(int argc, char** argv)
         if (key == 'm' || key == 'M') {                         // 切换模式
             passwordMode = !passwordMode;
             gate.clear();
+        }
+        // 键盘数字路：与眼控同一入口，方便对比测试（仅密码模式）
+        if (passwordMode && key >= '1' && key <= '9') {
+            gate.inputDigit((char)key);
+            std::cout << "[KEY-kbd] " << (char)key
+                      << "  password=" << gate.entered() << "\n";
         }
     }
     return 0;
