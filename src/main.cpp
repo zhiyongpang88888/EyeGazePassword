@@ -182,12 +182,33 @@ static std::string findCascadeDir()
     return "";
 }
 
+// 没指定 --camera 时，逐个试摄像头，挑第一个"画面不黑"的
+// （笔记本 0 号常是红外/虚拟摄像头，取到的帧接近全黑）
+static int autoPickCamera()
+{
+    for (int i = 0; i < 4; i++) {
+        cv::VideoCapture c(i);
+        if (!c.isOpened()) continue;
+        cv::Mat f;
+        for (int k = 0; k < 10; k++) c >> f;   // 丢掉前几帧再判断
+        if (f.empty()) continue;
+        cv::Scalar m = cv::mean(f);
+        double avg = (m[0] + m[1] + m[2]) / 3.0;
+        std::cout << "[INFO] camera " << i << " mean=" << avg
+                  << (avg > 30 ? "  <- use" : "  (dark, skip)") << "\n";
+        if (avg > 30) return i;
+    }
+    std::cout << "[WARN] no bright camera found, fallback to 0\n";
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     int camIndex = 0;
+    bool camSpecified = false;
     std::string videoPath;
     for (int i = 1; i < argc - 1; i++) {
-        if (std::string(argv[i]) == "--camera") camIndex = std::atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--camera") { camIndex = std::atoi(argv[i + 1]); camSpecified = true; }
         if (std::string(argv[i]) == "--video")  videoPath = argv[i + 1];
     }
 
@@ -201,14 +222,18 @@ int main(int argc, char** argv)
 
     // ---------- 任务1：摄像头采集 ----------
     cv::VideoCapture cap;
-    if (!videoPath.empty())
+    if (!videoPath.empty()) {
         cap.open(videoPath);
-    else
+    } else {
+        if (!camSpecified) camIndex = autoPickCamera();   // 自动挑正常摄像头
         cap.open(camIndex);
+    }
     if (!cap.isOpened()) {
         std::cerr << "[ERROR] cannot open camera/video. Try: --camera 1  or  --video test.mp4\n";
         return 1;
     }
+    std::cout << "[INFO] using " << (videoPath.empty() ? "camera " : "video ")
+              << (videoPath.empty() ? std::to_string(camIndex) : videoPath) << "\n";
 
     const std::string winMain = "EyeGazePassword";
     cv::namedWindow(winMain, cv::WINDOW_AUTOSIZE);
